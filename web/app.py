@@ -15,7 +15,7 @@ from core.memory import read_memory, update_memory
 from core.tools import parse_tool_call, strip_tool_call, execute_tool, get_tool_list
 
 # Import tools to register them
-import tools.test_tool  # This will auto-register the test tool
+import tools  # This will auto-register the test tool
 
 app = FastAPI(title=config.ASSISTANT_NAME)
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))

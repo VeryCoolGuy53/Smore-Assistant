@@ -24,7 +24,7 @@ def parse_tool_call(response: str) -> Optional[Tuple[str, str]]:
     Extract tool call from response.
     Returns (tool_name, params) or None if no tool call found.
     """
-    pattern = r'\[TOOL:([^\]]+)\](.+?)\[/TOOL\]'
+    pattern = r"\[TOOL:([^\]]+)\](.*?)\[/TOOL\]"
     match = re.search(pattern, response, re.DOTALL)
 
     if match:
@@ -36,13 +36,13 @@ def parse_tool_call(response: str) -> Optional[Tuple[str, str]]:
 
 def strip_tool_call(response: str) -> str:
     """Remove tool call block from response."""
-    pattern = r'\[TOOL:[^\]]+\].+?\[/TOOL\]'
-    return re.sub(pattern, '', response, flags=re.DOTALL).strip()
+    pattern = r"\[TOOL:[^\]]+\].*?\[/TOOL\]"
+    return re.sub(pattern, "", response, flags=re.DOTALL).strip()
 
 async def execute_tool(name: str, params: str) -> str:
     """Execute a tool by name with given params."""
     if name not in TOOLS:
-        return f"Error: Unknown tool '{name}'. Available: {', '.join(TOOLS.keys())}"
+        return f"Error: Unknown tool. Available: {', '.join(TOOLS.keys())}"
 
     try:
         result = await TOOLS[name].run(params)

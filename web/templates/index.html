@@ -5,11 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ assistant_name }}</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             background: #1a1a2e;
@@ -24,10 +20,7 @@
             text-align: center;
             border-bottom: 1px solid #0f3460;
         }
-        header h1 {
-            color: #e94560;
-            font-size: 1.5rem;
-        }
+        header h1 { color: #e94560; font-size: 1.5rem; }
         #chat-container {
             flex: 1;
             overflow-y: auto;
@@ -41,6 +34,7 @@
             padding: 0.75rem 1rem;
             border-radius: 1rem;
             line-height: 1.5;
+            white-space: pre-wrap;
         }
         .message.user {
             background: #0f3460;
@@ -53,16 +47,37 @@
             border-bottom-left-radius: 0.25rem;
             border: 1px solid #0f3460;
         }
-        .message pre {
-            background: #0a0a15;
-            padding: 0.5rem;
-            border-radius: 0.5rem;
-            overflow-x: auto;
-            margin: 0.5rem 0;
+        #tools-container {
+            padding: 0.5rem 1rem;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
         }
-        .message code {
-            font-family: "Fira Code", monospace;
-            font-size: 0.9rem;
+        .tool-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            background: #0f3460;
+            padding: 0.4rem 0.8rem;
+            border-radius: 2rem;
+            font-size: 0.85rem;
+            color: #4fc3f7;
+            animation: fadeIn 0.3s ease;
+        }
+        .tool-badge .spinner {
+            width: 14px;
+            height: 14px;
+            border: 2px solid #4fc3f7;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: scale(0.9); }
+            to { opacity: 1; transform: scale(1); }
         }
         #input-container {
             padding: 1rem;
@@ -81,9 +96,7 @@
             font-size: 1rem;
             outline: none;
         }
-        #message-input:focus {
-            border-color: #e94560;
-        }
+        #message-input:focus { border-color: #e94560; }
         #send-btn {
             padding: 0.75rem 1.5rem;
             background: #e94560;
@@ -92,18 +105,9 @@
             border-radius: 0.5rem;
             cursor: pointer;
             font-size: 1rem;
-            transition: background 0.2s;
         }
-        #send-btn:hover {
-            background: #ff6b6b;
-        }
-        #send-btn:disabled {
-            background: #555;
-            cursor: not-allowed;
-        }
-        .typing {
-            opacity: 0.7;
-        }
+        #send-btn:hover { background: #ff6b6b; }
+        #send-btn:disabled { background: #555; cursor: not-allowed; }
     </style>
 </head>
 <body>
@@ -111,6 +115,7 @@
         <h1>{{ assistant_name }}</h1>
     </header>
     
+    <div id="tools-container"></div>
     <div id="chat-container"></div>
     
     <div id="input-container">
@@ -120,43 +125,74 @@
 
     <script>
         const chatContainer = document.getElementById("chat-container");
+        const toolsContainer = document.getElementById("tools-container");
         const messageInput = document.getElementById("message-input");
         const sendBtn = document.getElementById("send-btn");
         
         let ws = null;
         let currentAssistantMessage = null;
+        let activeTools = new Map();
         
         function connect() {
             const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
             ws = new WebSocket(`${protocol}//${window.location.host}/ws/chat`);
             
-            ws.onopen = () => {
-                console.log("Connected to assistant");
-            };
-            
             ws.onmessage = (event) => {
-                if (event.data === "[END]") {
+                const data = event.data;
+                
+                // Check for tool status messages
+                if (data.startsWith("[Using ") && data.includes("...]")) {
+                    const toolName = data.match(/\[Using (.+?)\.\.\.\]/)[1];
+                    addToolSpinner(toolName);
+                    return;
+                }
+                
+                // Check for tool complete
+                if (data.startsWith("[Done: ")) {
+                    const toolName = data.match(/\[Done: (.+?)\]/)[1];
+                    removeToolSpinner(toolName);
+                    return;
+                }
+                
+                if (data === "[END]") {
                     currentAssistantMessage = null;
                     sendBtn.disabled = false;
                     messageInput.disabled = false;
                     messageInput.focus();
+                    clearAllToolSpinners();
                 } else {
                     if (!currentAssistantMessage) {
                         currentAssistantMessage = addMessage("", "assistant");
                     }
-                    currentAssistantMessage.textContent += event.data;
+                    currentAssistantMessage.textContent += data;
                     chatContainer.scrollTop = chatContainer.scrollHeight;
                 }
             };
             
-            ws.onclose = () => {
-                console.log("Disconnected, reconnecting...");
-                setTimeout(connect, 1000);
-            };
+            ws.onclose = () => setTimeout(connect, 1000);
+        }
+        
+        function addToolSpinner(toolName) {
+            if (activeTools.has(toolName)) return;
             
-            ws.onerror = (error) => {
-                console.error("WebSocket error:", error);
-            };
+            const badge = document.createElement("div");
+            badge.className = "tool-badge";
+            badge.innerHTML = `<div class="spinner"></div><span>${toolName}</span>`;
+            toolsContainer.appendChild(badge);
+            activeTools.set(toolName, badge);
+        }
+        
+        function removeToolSpinner(toolName) {
+            const badge = activeTools.get(toolName);
+            if (badge) {
+                badge.remove();
+                activeTools.delete(toolName);
+            }
+        }
+        
+        function clearAllToolSpinners() {
+            activeTools.forEach(badge => badge.remove());
+            activeTools.clear();
         }
         
         function addMessage(text, role) {
@@ -176,7 +212,6 @@
             messageInput.value = "";
             sendBtn.disabled = true;
             messageInput.disabled = true;
-            
             ws.send(text);
         }
         
