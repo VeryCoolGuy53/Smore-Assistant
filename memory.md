@@ -2,10 +2,9 @@
 
 ## About User
 - Name: Smore
-- (add more as you learn)
 
 ## Preferences
-- (learn and add preferences here)
+- (none specified yet)
 
 ## Important Notes
-- (things to remember)
+- (none specified yet)
