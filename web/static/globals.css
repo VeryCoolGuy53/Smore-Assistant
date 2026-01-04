@@ -1,37 +1,32 @@
-@import "tailwindcss";
-
 @font-face {
   font-family: 'Octarine';
-  src: url('/fonts/octarine.bold.otf') format('opentype');
+  src: url('/static/fonts/octarine.bold.otf') format('opentype');
   font-weight: 700;
   font-style: normal;
 }
 
 @font-face {
   font-family: 'Figtree';
-  src: url('/fonts/Figtree-VariableFont_wght.ttf') format('truetype');
+  src: url('/static/fonts/Figtree-VariableFont_wght.ttf') format('truetype');
   font-weight: 100 900;
   font-style: normal;
 }
 
-/* stylelint-disable-next-line */
-@theme {
+:root {
   --color-background: #232323;
   --color-foreground: #ffffff;
   --color-accent: #FBB040;
   --color-bg-dark: #232323;
   --color-bg-light: #464646;
   --color-subtext: #F5F5F5;
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: Arial, Helvetica, sans-serif;
+  --font-mono: 'Courier New', monospace;
   --font-heading: 'Octarine', sans-serif;
-}
 
-:root {
   --background: var(--color-background);
   --foreground: var(--color-foreground);
-  --radius: 1.0rem; /* this seems to be the radius for buttons and such */
-  --radius-lg: 1.0rem; /* this seems to be the radius for large items like containers */
+  --radius: 1.0rem;
+  --radius-lg: 1.0rem;
 }
 
 html, body {

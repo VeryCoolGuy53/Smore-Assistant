@@ -57,6 +57,24 @@ def strip_tool_call(response: str) -> str:
     lenient_pattern = r"\[TOOL:[^\]]+\].*?\[/TOO[L]?\]?"
     return re.sub(lenient_pattern, "", response, flags=re.DOTALL).strip()
 
+def parse_thinking(response: str) -> Optional[str]:
+    """
+    Extract thinking content from response.
+    Returns thinking content or None if no thinking tags found.
+    """
+    pattern = r"\[THINKING\](.*?)\[/THINKING\]"
+    match = re.search(pattern, response, re.DOTALL)
+
+    if match:
+        return match.group(1).strip()
+
+    return None
+
+def strip_thinking(response: str) -> str:
+    """Remove thinking tags from response."""
+    pattern = r"\[THINKING\].*?\[/THINKING\]"
+    return re.sub(pattern, "", response, flags=re.DOTALL).strip()
+
 async def execute_tool(name: str, params: str) -> str:
     """Execute a tool by name with given params."""
     if name not in TOOLS:

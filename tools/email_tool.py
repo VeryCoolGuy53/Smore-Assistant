@@ -81,14 +81,37 @@ class ListAccountsTool(Tool):
 @register_tool
 class SearchEmailsTool(Tool):
     name = "search_emails"
-    description = "Search emails. Params: [account:]query (e.g., from:mom or work@gmail.com:subject:meeting)"
-    
+    description = "Search emails IN a specific account. Format: 'account@email.com query' or 'account@email.com:query'. IMPORTANT: Put the account FIRST, then the Gmail search query. Examples: 'ytsmore27@gmail.com subject:GPU' searches the ytsmore27 account for emails about GPU. 'ytsmore27@gmail.com from:ebay' searches ytsmore27 account for emails FROM ebay."
+
     async def run(self, params):
-        if ":" in params and "@" in params.split(":")[0]:
-            account, query = params.split(":", 1)
-        else:
-            account = None
-            query = params
+        # Parse account prefix - support both "account query" and "account:query" formats
+        # IMPORTANT: Account prefix must be at the VERY START (not Gmail query syntax like "from:email@domain")
+        account = None
+        query = params
+
+        # Check if params starts with an email address (not preceded by query keywords)
+        # Common Gmail query keywords that contain `:` before the email
+        gmail_keywords = ['from:', 'to:', 'cc:', 'bcc:', 'subject:', 'in:', 'is:', 'has:', 'after:', 'before:']
+
+        # If params starts with a Gmail keyword, treat entire params as query (no account prefix)
+        starts_with_keyword = any(params.lower().startswith(kw) for kw in gmail_keywords)
+
+        if not starts_with_keyword:
+            first_word = params.split(None, 1)[0] if params else ""
+
+            # Space-separated format: "email@domain query"
+            if "@" in first_word and ":" not in first_word:
+                parts = params.split(None, 1)
+                if len(parts) == 2:
+                    account = parts[0]
+                    query = parts[1]
+            # Colon-separated format: "email@domain:query" (email must come FIRST)
+            elif ":" in params and "@" in params:
+                colon_pos = params.index(":")
+                at_pos = params.index("@")
+                # @ must come before : AND be in the first word (before any space)
+                if at_pos < colon_pos and (":  " not in params or at_pos < params.index(" ")):
+                    account, query = params.split(":", 1)
         
         service, acct = get_gmail_service(account)
         if service is None:
@@ -124,14 +147,32 @@ class SearchEmailsTool(Tool):
 @register_tool
 class ReadEmailTool(Tool):
     name = "read_email"
-    description = "Read email content. Params: [account:]search query to find the email"
-    
+    description = "Read email content from a specific account. Format: 'account@email.com query'. Put account FIRST, then Gmail query. Example: 'ytsmore27@gmail.com subject:GPU order' reads from ytsmore27 account."
+
     async def run(self, params):
-        if ":" in params and "@" in params.split(":")[0]:
-            account, query = params.split(":", 1)
-        else:
-            account = None
-            query = params
+        # Parse account prefix - same logic as SearchEmailsTool
+        account = None
+        query = params
+
+        # Gmail query keywords that shouldn't be confused with account prefix
+        gmail_keywords = ['from:', 'to:', 'cc:', 'bcc:', 'subject:', 'in:', 'is:', 'has:', 'after:', 'before:']
+        starts_with_keyword = any(params.lower().startswith(kw) for kw in gmail_keywords)
+
+        if not starts_with_keyword:
+            first_word = params.split(None, 1)[0] if params else ""
+
+            # Space-separated: "email@domain query"
+            if "@" in first_word and ":" not in first_word:
+                parts = params.split(None, 1)
+                if len(parts) == 2:
+                    account = parts[0]
+                    query = parts[1]
+            # Colon-separated: "email@domain:query"
+            elif ":" in params and "@" in params:
+                colon_pos = params.index(":")
+                at_pos = params.index("@")
+                if at_pos < colon_pos and (" " not in params or at_pos < params.index(" ")):
+                    account, query = params.split(":", 1)
         
         service, acct = get_gmail_service(account)
         if service is None:
@@ -169,17 +210,30 @@ class ReadEmailTool(Tool):
         except Exception as e:
             return f"Error reading email: {str(e)}"
 
-@register_tool  
+@register_tool
 class CreateDraftTool(Tool):
     name = "create_draft"
-    description = "Create email draft. Params: [from_account:]to|subject|body"
-    
+    description = "Create email draft. Params: [from_account ]to|subject|body or [from_account:]to|subject|body"
+
     async def run(self, params):
-        if ":" in params and "@" in params.split(":")[0] and "|" in params:
-            account, rest = params.split(":", 1)
-        else:
-            account = None
-            rest = params
+        # Parse account prefix - same logic but watch for | separator
+        account = None
+        rest = params
+
+        first_word = params.split(None, 1)[0] if params else ""
+
+        if "@" in first_word and ":" not in first_word and "|" in params:
+            parts = params.split(None, 1)
+            if len(parts) == 2:
+                account = parts[0]
+                rest = parts[1]
+        elif ":" in params and "@" in params and "|" in params:
+            colon_pos = params.index(":")
+            pipe_pos = params.index("|")
+            at_pos = params.index("@")
+
+            if at_pos < colon_pos < pipe_pos:
+                account, rest = params.split(":", 1)
         
         parts = rest.split("|")
         if len(parts) < 3:

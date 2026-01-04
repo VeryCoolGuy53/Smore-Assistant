@@ -8,13 +8,16 @@ from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from starlette.middleware.sessions import SessionMiddleware
 import sys
 import os
+import json
+from datetime import datetime, timezone
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config
 from core.ollama_client import OllamaClient
 from core.memory import read_memory, update_memory
-from core.tools import parse_tool_call, strip_tool_call, execute_tool, get_tool_list, TOOLS
+from core.tools import parse_tool_call, strip_tool_call, execute_tool, get_tool_list, parse_thinking, strip_thinking, TOOLS
 
 import tools  # This registers all tools
 
@@ -79,6 +82,15 @@ async def get_full_response(messages: list) -> str:
     async for chunk in ollama.chat(messages, stream=True):
         full_response += chunk
     return full_response
+
+def create_message(msg_type: str, **kwargs) -> str:
+    """Create JSON message with timestamp."""
+    data = {
+        "type": msg_type,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        **kwargs
+    }
+    return json.dumps(data)
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
@@ -154,10 +166,19 @@ async def websocket_chat(websocket: WebSocket):
             sys.stdout.flush()
             conversations[session_id].append({"role": "user", "content": data})
 
+            # Echo user message to frontend with timestamp
+            await websocket.send_text(create_message("user_message", content=data))
+
             messages = [{"role": "system", "content": get_system_prompt()}]
             messages.extend(conversations[session_id])
 
-            max_iterations = 10
+            # Inject initial thinking prompt
+            messages.append({
+                "role": "user",
+                "content": "Before using tools, think through your strategy: What are you trying to find? What search terms should you try? Start with 2-3 targeted searches, then WAIT to see results before trying more. Output your plan in [THINKING]...[/THINKING] tags."
+            })
+
+            max_iterations = 20
             iteration = 0
             full_conversation_response = ""
 
@@ -165,9 +186,29 @@ async def websocket_chat(websocket: WebSocket):
                 iteration += 1
                 print(f"DEBUG: Iteration {iteration}")
 
+                # Inject reflection prompt every 3 iterations
+                if iteration > 1 and iteration % 3 == 0:
+                    messages.append({
+                        "role": "user",
+                        "content": "Progress check: Are you making progress? If yes, continue carefully. If no, try ONE different approach (different keywords, broader search, different account). Don't launch many tools at once - be strategic and measured."
+                    })
+                    print(f"DEBUG: Injected reflection prompt at iteration {iteration}")
+
+                # Send thinking indicator if not first iteration
+                if iteration > 1:
+                    await websocket.send_text(create_message("thinking", iteration=iteration))
+
                 response = await get_full_response(messages)
                 response = process_memory_update(response)
                 print(f"DEBUG: AI response: {response[:200]}...")
+
+                # Parse and log thinking (internal reasoning, not shown to user)
+                thinking = parse_thinking(response)
+                if thinking:
+                    print(f"THINKING: {thinking}")
+                    sys.stdout.flush()
+                    # Strip thinking from response before processing tools
+                    response = strip_thinking(response)
 
                 tool_call = parse_tool_call(response)
                 print(f"DEBUG: Tool call parsed: {tool_call}")
@@ -178,11 +219,21 @@ async def websocket_chat(websocket: WebSocket):
 
                     text_before = extract_text_before_tool(response)
                     if text_before:
-                        await websocket.send_text(text_before + "\n\n")
-                        full_conversation_response += text_before + "\n\n"
+                        # Stream text before tool character by character
+                        for char in text_before:
+                            await websocket.send_text(create_message("assistant_chunk", content=char))
+                        full_conversation_response += text_before
 
-                    await websocket.send_text(f"[Using {tool_name}...]\n")
+                    # Send tool start
+                    start_time = time.time()
+                    await websocket.send_text(create_message(
+                        "tool_start",
+                        tool_name=tool_name,
+                        params=params,
+                        iteration=iteration
+                    ))
 
+                    # Execute tool
                     try:
                         tool_result = await execute_tool(tool_name, params)
                         print(f"DEBUG: Tool result: {tool_result}")
@@ -190,23 +241,35 @@ async def websocket_chat(websocket: WebSocket):
                         tool_result = f"Error: {str(e)}"
                         print(f"DEBUG: Tool error: {e}")
 
-                    await websocket.send_text(f"[Done: {tool_name}]\n")
+                    # Send tool result (NEW - visible to user)
+                    duration_ms = int((time.time() - start_time) * 1000)
+                    await websocket.send_text(create_message(
+                        "tool_result",
+                        tool_name=tool_name,
+                        result=tool_result,
+                        iteration=iteration,
+                        duration_ms=duration_ms
+                    ))
 
+                    # Update conversation
                     messages.append({"role": "assistant", "content": response})
                     messages.append({
                         "role": "user",
                         "content": f"[Tool Result from {tool_name}]: {tool_result}"
                     })
                 else:
+                    # Stream final response character by character
                     cleaned = strip_tool_call(response)
                     if cleaned:
                         print(f"ASSISTANT: {cleaned}")
                         sys.stdout.flush()
-                        await websocket.send_text(cleaned)
+                        for char in cleaned:
+                            await websocket.send_text(create_message("assistant_chunk", content=char))
                         full_conversation_response += cleaned
                     break
 
-            await websocket.send_text("[END]")
+            # Send end message
+            await websocket.send_text(create_message("end", total_iterations=iteration))
 
             if full_conversation_response.strip():
                 conversations[session_id].append({

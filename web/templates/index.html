@@ -4,222 +4,477 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ assistant_name }}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/static/globals.css">
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+        /* Use Tailwind for most styling, add only component-specific styles */
+
+        /* Force custom colors (Tailwind CDN doesn't support CSS var arbitrary values) */
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background: #1a1a2e;
-            color: #eee;
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
+            background-color: var(--color-background) !important;
+            color: var(--color-foreground) !important;
         }
+
         header {
-            background: #16213e;
-            padding: 1rem;
-            text-align: center;
-            border-bottom: 1px solid #0f3460;
+            background-color: var(--color-bg-light) !important;
+            border-color: var(--color-bg-dark) !important;
         }
-        header h1 { color: #e94560; font-size: 1.5rem; }
-        #chat-container {
-            flex: 1;
-            overflow-y: auto;
-            padding: 1rem;
-            display: flex;
-            flex-direction: column;
-            gap: 1rem;
+
+        header h1 {
+            color: var(--color-accent) !important;
         }
-        .message {
-            max-width: 80%;
-            padding: 0.75rem 1rem;
-            border-radius: 1rem;
-            line-height: 1.5;
-            white-space: pre-wrap;
+
+        #input-container {
+            background-color: var(--color-bg-light) !important;
+            border-color: var(--color-bg-dark) !important;
         }
-        .message.user {
-            background: #0f3460;
-            align-self: flex-end;
-            border-bottom-right-radius: 0.25rem;
+
+        #message-input {
+            background-color: var(--color-background) !important;
+            color: var(--color-foreground) !important;
+            border-color: var(--color-bg-dark) !important;
         }
-        .message.assistant {
-            background: #16213e;
-            align-self: flex-start;
-            border-bottom-left-radius: 0.25rem;
-            border: 1px solid #0f3460;
+
+        #message-input:focus {
+            border-color: var(--color-accent) !important;
         }
-        #tools-container {
-            padding: 0.5rem 1rem;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.5rem;
+
+        #send-btn {
+            background-color: var(--color-accent) !important;
         }
-        .tool-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            background: #0f3460;
-            padding: 0.4rem 0.8rem;
-            border-radius: 2rem;
-            font-size: 0.85rem;
-            color: #4fc3f7;
+
+        /* Message animations */
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.4; }
+            50% { opacity: 1; }
+        }
+
+        .message-group {
             animation: fadeIn 0.3s ease;
         }
-        .tool-badge .spinner {
-            width: 14px;
-            height: 14px;
-            border: 2px solid #4fc3f7;
+
+        .tool-status-icon.pending {
+            border: 2px solid var(--color-accent);
             border-top-color: transparent;
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
         }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
+
+        .thinking-dots span {
+            animation: pulse 1.4s ease-in-out infinite;
         }
-        @keyframes fadeIn {
-            from { opacity: 0; transform: scale(0.9); }
-            to { opacity: 1; transform: scale(1); }
+
+        .thinking-dots span:nth-child(2) {
+            animation-delay: 0.2s;
         }
-        #input-container {
-            padding: 1rem;
-            background: #16213e;
-            border-top: 1px solid #0f3460;
-            display: flex;
-            gap: 0.5rem;
+
+        .thinking-dots span:nth-child(3) {
+            animation-delay: 0.4s;
         }
-        #message-input {
-            flex: 1;
-            padding: 0.75rem 1rem;
-            border: 1px solid #0f3460;
-            border-radius: 0.5rem;
-            background: #1a1a2e;
-            color: #eee;
-            font-size: 1rem;
-            outline: none;
+
+        .tool-result.collapsed {
+            max-height: 4em;
+            overflow: hidden;
+            position: relative;
         }
-        #message-input:focus { border-color: #e94560; }
-        #send-btn {
-            padding: 0.75rem 1.5rem;
-            background: #e94560;
-            color: white;
-            border: none;
-            border-radius: 0.5rem;
-            cursor: pointer;
-            font-size: 1rem;
+
+        .tool-result.collapsed::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 2em;
+            background: linear-gradient(transparent, var(--color-bg-dark));
         }
-        #send-btn:hover { background: #ff6b6b; }
-        #send-btn:disabled { background: #555; cursor: not-allowed; }
+
+        /* Message bubble colors and sizing */
+        .message-group.user > div:first-child {
+            background-color: var(--color-bg-light) !important;
+            width: fit-content !important;
+            max-width: 80% !important;
+        }
+
+        .message-group.assistant .assistant-text {
+            background-color: var(--color-bg-dark) !important;
+            border-color: var(--color-bg-light) !important;
+            width: fit-content !important;
+            max-width: 85% !important;
+        }
+
+        .tool-execution {
+            background-color: rgba(70, 70, 70, 0.5) !important; /* var(--color-bg-light) with 50% opacity */
+            border-left-color: var(--color-accent) !important;
+            width: fit-content !important;
+            max-width: 85% !important;
+        }
+
+        .tool-name {
+            color: var(--color-accent) !important;
+        }
+
+        .iteration-indicator {
+            background-color: var(--color-bg-light) !important;
+            color: var(--color-accent) !important;
+        }
+
+        .thinking-dots span {
+            background-color: var(--color-accent) !important;
+        }
+
+        .copy-button:hover {
+            color: var(--color-accent) !important;
+        }
     </style>
 </head>
-<body>
-    <header>
-        <h1>{{ assistant_name }}</h1>
+<body class="flex flex-col h-screen bg-[var(--color-background)] text-[var(--color-foreground)] font-['Figtree']">
+    <header class="bg-[var(--color-bg-light)] px-4 py-3 text-center border-b border-[var(--color-bg-dark)]">
+        <h1 class="text-[var(--color-accent)] text-2xl font-['Octarine']">{{ assistant_name }}</h1>
     </header>
-    
-    <div id="tools-container"></div>
-    <div id="chat-container"></div>
-    
-    <div id="input-container">
-        <input type="text" id="message-input" placeholder="Type your message..." autofocus>
-        <button id="send-btn">Send</button>
+
+    <div id="chat-container" class="flex-1 overflow-y-auto p-4 flex flex-col gap-4"></div>
+
+    <div id="input-container" class="p-4 bg-[var(--color-bg-light)] border-t border-[var(--color-bg-dark)] flex gap-2">
+        <input type="text" id="message-input" placeholder="Type your message..." autofocus
+               class="flex-1 px-4 py-3 border border-[var(--color-bg-dark)] rounded-lg bg-[var(--color-background)] text-[var(--color-foreground)] text-base outline-none focus:border-[var(--color-accent)]">
+        <button id="send-btn" class="px-6 py-3 bg-[var(--color-accent)] text-white border-none rounded-lg cursor-pointer text-base hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed">Send</button>
     </div>
 
     <script>
         const chatContainer = document.getElementById("chat-container");
-        const toolsContainer = document.getElementById("tools-container");
         const messageInput = document.getElementById("message-input");
         const sendBtn = document.getElementById("send-btn");
-        
+
         let ws = null;
-        let currentAssistantMessage = null;
-        let activeTools = new Map();
-        
+        let chatState = {
+            currentMessage: null,
+            isProcessing: false
+        };
+
+        // Utility functions
+        function generateId() {
+            return `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        }
+
+        function formatTimestamp(isoString) {
+            const date = new Date(isoString);
+            const now = new Date();
+            const diffMs = now - date;
+            const diffMins = Math.floor(diffMs / 60000);
+
+            if (diffMins < 1) return "Just now";
+            if (diffMins < 60) return `${diffMins}m ago`;
+
+            const diffHours = Math.floor(diffMins / 60);
+            if (diffHours < 24) return `${diffHours}h ago`;
+
+            return date.toLocaleDateString();
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        async function copyToClipboard(text, button) {
+            try {
+                await navigator.clipboard.writeText(text);
+                const originalHTML = button.innerHTML;
+                button.innerHTML = '✓ Copied';
+                button.classList.add('text-green-500');
+                setTimeout(() => {
+                    button.innerHTML = originalHTML;
+                    button.classList.remove('text-green-500');
+                }, 2000);
+            } catch (err) {
+                console.error('Copy failed:', err);
+            }
+        }
+
+        // Render functions
+        function renderUserMessage(content, timestamp) {
+            const messageGroup = document.createElement('div');
+            messageGroup.className = 'message-group flex flex-col items-end gap-1';
+
+            messageGroup.innerHTML = `<div class="bg-[var(--color-bg-light)] text-white px-4 py-3 rounded-2xl rounded-br-md max-w-[80%] shadow-md whitespace-pre-wrap">${escapeHtml(content)}</div><div class="flex items-center gap-3 px-2 text-xs text-[var(--color-subtext)] opacity-70"><span class="timestamp">${formatTimestamp(timestamp)}</span><button class="copy-button hover:text-[var(--color-accent)] transition-colors cursor-pointer" data-text="${escapeHtml(content).replace(/"/g, '&quot;')}">📋 Copy</button></div>`;
+
+            // Add copy button event listener
+            const copyBtn = messageGroup.querySelector('.copy-button');
+            copyBtn.addEventListener('click', function() {
+                copyToClipboard(this.getAttribute('data-text'), this);
+            });
+
+            chatContainer.appendChild(messageGroup);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+            return messageGroup;
+        }
+
+        function renderAssistantMessage(id) {
+            const messageGroup = document.createElement('div');
+            messageGroup.className = 'message-group flex flex-col items-start gap-1';
+            messageGroup.id = id;
+
+            messageGroup.innerHTML = `<div class="message-content assistant-text bg-[var(--color-bg-dark)] border border-[var(--color-bg-light)] text-white px-4 py-3 rounded-2xl rounded-bl-md max-w-[85%] shadow-md whitespace-pre-wrap"></div><div class="message-metadata flex items-center gap-3 px-2 text-xs text-[var(--color-subtext)] opacity-70"><span class="timestamp"></span><button class="copy-button hover:text-[var(--color-accent)] transition-colors cursor-pointer">📋 Copy</button></div>`;
+
+            // Add copy button event listener
+            const copyBtn = messageGroup.querySelector('.copy-button');
+            copyBtn.addEventListener('click', function() {
+                copyAssistantMessage(id);
+            });
+
+            chatContainer.appendChild(messageGroup);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+            return messageGroup;
+        }
+
+        function appendToAssistantMessage(messageGroup, chunk) {
+            const textContent = messageGroup.querySelector('.message-content.assistant-text');
+            textContent.textContent += chunk;
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function addIterationIndicator(messageGroup, iteration, total) {
+            let indicator = messageGroup.querySelector('.iteration-indicator');
+            if (!indicator) {
+                indicator = document.createElement('div');
+                indicator.className = 'iteration-indicator inline-flex items-center gap-1 bg-[var(--color-bg-light)] px-3 py-1 rounded-full text-xs text-[var(--color-accent)] mb-2';
+                messageGroup.insertBefore(indicator, messageGroup.firstChild);
+            }
+            indicator.innerHTML = `🔄 Iteration ${iteration}${total ? `/${total}` : ''}`;
+        }
+
+        function addToolExecution(messageGroup, toolName, params) {
+            const toolId = `tool-${generateId()}`;
+            const toolBlock = document.createElement('div');
+            toolBlock.className = 'tool-execution bg-[var(--color-bg-light)]/50 border-l-4 border-[var(--color-accent)] rounded-md p-3 ml-4 my-2 max-w-[85%]';
+            toolBlock.id = toolId;
+
+            const truncatedParams = params && params.length > 50 ? params.substring(0, 50) + '...' : params;
+
+            toolBlock.innerHTML = `<div class="tool-header flex items-center gap-2 cursor-pointer" data-tool-id="${toolId}"><div class="tool-status-icon pending w-4 h-4 flex-shrink-0"></div><span class="tool-name text-[var(--color-accent)] text-sm font-mono">${escapeHtml(toolName)}</span>${params ? `<span class="tool-params text-[var(--color-subtext)] text-xs">(${escapeHtml(truncatedParams)})</span>` : ''}</div><div class="tool-result collapsed mt-2 p-2 bg-black/30 rounded text-sm text-[var(--color-subtext)] font-mono cursor-pointer" style="display: none;"><em>Executing...</em></div>`;
+
+            // Add click handlers
+            const header = toolBlock.querySelector('.tool-header');
+            const result = toolBlock.querySelector('.tool-result');
+            header.addEventListener('click', () => toggleToolResult(toolId));
+            result.addEventListener('click', () => toggleToolResult(toolId));
+
+            // Insert tool before the text content div (so tools appear above text)
+            const textDiv = messageGroup.querySelector('.message-content.assistant-text');
+            messageGroup.insertBefore(toolBlock, textDiv);
+
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+            return toolId;
+        }
+
+        function toggleToolResult(toolId) {
+            const toolBlock = document.getElementById(toolId);
+            if (!toolBlock) return;
+
+            const result = toolBlock.querySelector('.tool-result');
+            result.classList.toggle('collapsed');
+        }
+
+        function updateToolResult(toolId, result, durationMs) {
+            const toolBlock = document.getElementById(toolId);
+            if (!toolBlock) return;
+
+            const statusIcon = toolBlock.querySelector('.tool-status-icon');
+            statusIcon.classList.remove('pending');
+            statusIcon.classList.add('text-green-500');
+            statusIcon.innerHTML = '✓';
+
+            const resultDiv = toolBlock.querySelector('.tool-result');
+            resultDiv.textContent = result;
+            resultDiv.style.display = 'block';
+
+            const header = toolBlock.querySelector('.tool-header');
+            const duration = document.createElement('span');
+            duration.className = 'ml-auto text-xs text-[var(--color-subtext)]';
+            duration.textContent = `${durationMs}ms`;
+            header.appendChild(duration);
+        }
+
+        function showThinkingIndicator() {
+            const existing = document.querySelector('.thinking-indicator');
+            if (existing) existing.remove();
+
+            const thinking = document.createElement('div');
+            thinking.className = 'thinking-indicator flex justify-center items-center gap-2 py-3 text-[var(--color-subtext)] italic';
+            thinking.innerHTML = `<span>Thinking</span><div class="thinking-dots flex gap-1"><span class="w-2 h-2 bg-[var(--color-accent)] rounded-full"></span><span class="w-2 h-2 bg-[var(--color-accent)] rounded-full"></span><span class="w-2 h-2 bg-[var(--color-accent)] rounded-full"></span></div>`;
+            chatContainer.appendChild(thinking);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function hideThinkingIndicator() {
+            const thinking = document.querySelector('.thinking-indicator');
+            if (thinking) thinking.remove();
+        }
+
+        function copyAssistantMessage(messageId) {
+            const messageGroup = document.getElementById(messageId);
+            if (!messageGroup) return;
+
+            let text = '';
+            const textContent = messageGroup.querySelector('.message-content.assistant-text');
+            if (textContent) text += textContent.textContent;
+
+            const toolBlocks = messageGroup.querySelectorAll('.tool-execution');
+            toolBlocks.forEach(tool => {
+                const name = tool.querySelector('.tool-name').textContent;
+                const result = tool.querySelector('.tool-result').textContent;
+                text += `\n\n[Tool: ${name}]\n${result}`;
+            });
+
+            const button = messageGroup.querySelector('.copy-button');
+            copyToClipboard(text.trim(), button);
+        }
+
+        // WebSocket handling
         function connect() {
             const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
             ws = new WebSocket(`${protocol}//${window.location.host}/ws/chat`);
-            
+
             ws.onmessage = (event) => {
-                const data = event.data;
-                
-                // Check for tool status messages
-                if (data.startsWith("[Using ") && data.includes("...]")) {
-                    const toolName = data.match(/\[Using (.+?)\.\.\.\]/)[1];
-                    addToolSpinner(toolName);
-                    return;
+                try {
+                    const msg = JSON.parse(event.data);
+                    handleMessage(msg);
+                } catch (e) {
+                    console.error('Failed to parse message:', event.data, e);
                 }
-                
-                // Check for tool complete
-                if (data.startsWith("[Done: ")) {
-                    const toolName = data.match(/\[Done: (.+?)\]/)[1];
-                    removeToolSpinner(toolName);
-                    return;
-                }
-                
-                if (data === "[END]") {
-                    currentAssistantMessage = null;
+            };
+
+            ws.onclose = () => setTimeout(connect, 1000);
+            ws.onerror = (error) => console.error('WebSocket error:', error);
+        }
+
+        function handleMessage(msg) {
+            switch (msg.type) {
+                case 'user_message':
+                    renderUserMessage(msg.content, msg.timestamp);
+                    break;
+
+                case 'assistant_chunk':
+                    if (!chatState.currentMessage) {
+                        const id = generateId();
+                        const messageGroup = renderAssistantMessage(id);
+                        chatState.currentMessage = {
+                            id,
+                            element: messageGroup,
+                            tools: [],
+                            text: ''
+                        };
+                    }
+                    chatState.currentMessage.text += msg.content;
+                    appendToAssistantMessage(chatState.currentMessage.element, msg.content);
+                    break;
+
+                case 'thinking':
+                    if (chatState.currentMessage) {
+                        addIterationIndicator(chatState.currentMessage.element, msg.iteration);
+                    }
+                    showThinkingIndicator();
+                    break;
+
+                case 'tool_start':
+                    hideThinkingIndicator();
+                    if (!chatState.currentMessage) {
+                        const id = generateId();
+                        const messageGroup = renderAssistantMessage(id);
+                        chatState.currentMessage = {
+                            id,
+                            element: messageGroup,
+                            tools: [],
+                            text: ''
+                        };
+                    }
+
+                    const toolId = addToolExecution(
+                        chatState.currentMessage.element,
+                        msg.tool_name,
+                        msg.params
+                    );
+                    chatState.currentMessage.tools.push({ toolId, name: msg.tool_name });
+
+                    if (msg.iteration > 1) {
+                        addIterationIndicator(chatState.currentMessage.element, msg.iteration);
+                    }
+                    break;
+
+                case 'tool_result':
+                    hideThinkingIndicator();
+                    const tool = chatState.currentMessage?.tools.find(t => t.name === msg.tool_name);
+                    if (tool) {
+                        updateToolResult(tool.toolId, msg.result, msg.duration_ms);
+                    }
+                    break;
+
+                case 'end':
+                    hideThinkingIndicator();
+                    if (chatState.currentMessage && msg.total_iterations > 1) {
+                        addIterationIndicator(
+                            chatState.currentMessage.element,
+                            msg.total_iterations,
+                            msg.total_iterations
+                        );
+                    }
+
+                    // Update timestamp
+                    if (chatState.currentMessage) {
+                        const timestamp = chatState.currentMessage.element.querySelector('.timestamp');
+                        if (timestamp) timestamp.textContent = formatTimestamp(msg.timestamp);
+                    }
+
+                    chatState.currentMessage = null;
+                    chatState.isProcessing = false;
                     sendBtn.disabled = false;
                     messageInput.disabled = false;
                     messageInput.focus();
-                    clearAllToolSpinners();
-                } else {
-                    if (!currentAssistantMessage) {
-                        currentAssistantMessage = addMessage("", "assistant");
-                    }
-                    currentAssistantMessage.textContent += data;
-                    chatContainer.scrollTop = chatContainer.scrollHeight;
-                }
-            };
-            
-            ws.onclose = () => setTimeout(connect, 1000);
-        }
-        
-        function addToolSpinner(toolName) {
-            if (activeTools.has(toolName)) return;
-            
-            const badge = document.createElement("div");
-            badge.className = "tool-badge";
-            badge.innerHTML = `<div class="spinner"></div><span>${toolName}</span>`;
-            toolsContainer.appendChild(badge);
-            activeTools.set(toolName, badge);
-        }
-        
-        function removeToolSpinner(toolName) {
-            const badge = activeTools.get(toolName);
-            if (badge) {
-                badge.remove();
-                activeTools.delete(toolName);
+                    break;
+
+                case 'error':
+                    hideThinkingIndicator();
+                    console.error('Server error:', msg.message);
+                    chatState.isProcessing = false;
+                    sendBtn.disabled = false;
+                    messageInput.disabled = false;
+                    break;
+
+                default:
+                    console.warn('Unknown message type:', msg.type);
             }
         }
-        
-        function clearAllToolSpinners() {
-            activeTools.forEach(badge => badge.remove());
-            activeTools.clear();
-        }
-        
-        function addMessage(text, role) {
-            const div = document.createElement("div");
-            div.className = `message ${role}`;
-            div.textContent = text;
-            chatContainer.appendChild(div);
-            chatContainer.scrollTop = chatContainer.scrollHeight;
-            return div;
-        }
-        
+
         function sendMessage() {
             const text = messageInput.value.trim();
             if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
-            
-            addMessage(text, "user");
+
             messageInput.value = "";
             sendBtn.disabled = true;
             messageInput.disabled = true;
+            chatState.isProcessing = true;
+
             ws.send(text);
         }
-        
+
         sendBtn.addEventListener("click", sendMessage);
         messageInput.addEventListener("keypress", (e) => {
-            if (e.key === "Enter") sendMessage();
+            if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
         });
-        
+
         connect();
     </script>
 </body>

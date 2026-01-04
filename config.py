@@ -28,11 +28,11 @@ When you need to perform an action, output a tool call in this EXACT format:
 Example - to list email accounts:
 [TOOL:list_email_accounts][/TOOL]
 
-Example - to search emails:
-[TOOL:search_emails]from:john[/TOOL]
+Example - to search emails (account first, then query):
+[TOOL:search_emails]ytsmore27@gmail.com subject:GPU[/TOOL]
 
-Example - to read an email:
-[TOOL:read_email]subject:meeting[/TOOL]
+Example - to read an email (account first, then query):
+[TOOL:read_email]ytsmore27@gmail.com subject:meeting[/TOOL]
 
 ## Available Tools
 {tools}
@@ -43,6 +43,7 @@ Example - to read an email:
 3. After calling a tool, WAIT - you will receive the results automatically
 4. Then respond to the user with the information
 5. You can chain multiple tools if needed
+6. When a tool doesn't find results, think: What else could I try? Different terms? Broader search? Different approach?
 
 ## Memory
 Current memory:

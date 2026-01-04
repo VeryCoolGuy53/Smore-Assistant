@@ -98,6 +98,41 @@ class MyTool(Tool):
 
 Tools auto-register on import. Import in [tools/\_\_init\_\_.py](tools/__init__.py) to activate.
 
+**IMPORTANT: Design tools to accept multiple parameter formats**
+
+The AI may send parameters in various formats depending on context. Tools should be flexible:
+
+```python
+# Example: Email search tool accepting both formats
+# Format 1: "email@domain query"
+# Format 2: "email@domain:query"
+
+async def run(self, params: str) -> str:
+    # Parse flexibly - support both space and colon separators
+    account = None
+    query = params
+
+    first_word = params.split(None, 1)[0] if params else ""
+
+    # Space-separated format
+    if "@" in first_word and ":" not in first_word:
+        parts = params.split(None, 1)
+        if len(parts) == 2:
+            account = parts[0]
+            query = parts[1]
+
+    # Colon-separated format
+    elif ":" in params and "@" in params:
+        colon_pos = params.index(":")
+        at_pos = params.index("@")
+        if at_pos < colon_pos:
+            account, query = params.split(":", 1)
+
+    # Use account and query...
+```
+
+Why this matters: The AI doesn't have rigid output formatting. Being flexible prevents bugs where valid tool calls fail due to minor format differences.
+
 ### Gmail Integration
 
 **OAuth Flow** ([auth_gmail.py](auth_gmail.py))
