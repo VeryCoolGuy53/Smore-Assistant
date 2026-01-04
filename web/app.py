@@ -1,145 +1,226 @@
 import re
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+import bcrypt
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Form, HTTPException
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+from starlette.middleware.sessions import SessionMiddleware
 import sys
 import os
 
-# Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config
 from core.ollama_client import OllamaClient
 from core.memory import read_memory, update_memory
-from core.tools import parse_tool_call, strip_tool_call, execute_tool, get_tool_list
+from core.tools import parse_tool_call, strip_tool_call, execute_tool, get_tool_list, TOOLS
 
-# Import tools to register them
-import tools  # This will auto-register the test tool
+import tools  # This registers all tools
+
+print(f"STARTUP: Registered tools: {list(TOOLS.keys())}")
 
 app = FastAPI(title=config.ASSISTANT_NAME)
+app.add_middleware(SessionMiddleware, secret_key=config.SECRET_KEY)
+
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
 
-# Mount static files
 static_path = os.path.join(os.path.dirname(__file__), "static")
 if os.path.exists(static_path):
     app.mount("/static", StaticFiles(directory=static_path), name="static")
 
-# Initialize Ollama client
 ollama = OllamaClient()
-
-# Store conversation history per session
 conversations: dict[str, list] = {}
+serializer = URLSafeTimedSerializer(config.SECRET_KEY)
+
+def verify_password(password: str) -> bool:
+    return bcrypt.checkpw(password.encode(), config.PASSWORD_HASH.encode())
+
+def create_session_token() -> str:
+    return serializer.dumps({"authenticated": True})
+
+def verify_session_token(token: str) -> bool:
+    try:
+        data = serializer.loads(token, max_age=config.SESSION_EXPIRY)
+        return data.get("authenticated", False)
+    except (BadSignature, SignatureExpired):
+        return False
+
+def get_current_user(request: Request):
+    token = request.session.get("auth_token")
+    if not token or not verify_session_token(token):
+        return None
+    return True
 
 def get_system_prompt() -> str:
-    """Get system prompt with current memory and tools injected."""
     memory = read_memory()
     tool_list = get_tool_list()
     return config.SYSTEM_PROMPT.format(memory=memory, tools=tool_list)
 
 def process_memory_update(response: str) -> str:
-    """Extract and apply memory updates, return cleaned response."""
-    pattern = r'\[MEMORY_UPDATE\](.*?)\[/MEMORY_UPDATE\]'
+    pattern = r"\[MEMORY_UPDATE\](.*?)\[/MEMORY_UPDATE\]"
     match = re.search(pattern, response, re.DOTALL)
-
     if match:
         new_memory = match.group(1).strip()
         if len(new_memory) <= 2000:
             update_memory(new_memory)
-            print(f"Memory updated: {len(new_memory)} chars")
-        response = re.sub(pattern, '', response, flags=re.DOTALL).strip()
-
+        response = re.sub(pattern, "", response, flags=re.DOTALL).strip()
     return response
 
+def extract_text_before_tool(response: str) -> str:
+    pattern = r"\[TOOL:[^\]]+\].*?\[/TOOL\]"
+    match = re.search(pattern, response, re.DOTALL)
+    if match:
+        return response[:match.start()].strip()
+    return response.strip()
+
 async def get_full_response(messages: list) -> str:
-    """Get complete (non-streaming) response from Ollama."""
     full_response = ""
     async for chunk in ollama.chat(messages, stream=True):
         full_response += chunk
     return full_response
 
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    if get_current_user(request):
+        return RedirectResponse(url="/", status_code=302)
+    return templates.TemplateResponse("login.html", {"request": request, "error": None})
+
+@app.post("/login")
+async def login(request: Request, password: str = Form(...)):
+    if verify_password(password):
+        request.session["auth_token"] = create_session_token()
+        return RedirectResponse(url="/", status_code=302)
+    return templates.TemplateResponse("login.html", {"request": request, "error": "Invalid password"})
+
+@app.get("/logout")
+async def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse(url="/login", status_code=302)
+
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    return templates.TemplateResponse("index.html", {
-        "request": request,
-        "assistant_name": config.ASSISTANT_NAME
-    })
+    if not get_current_user(request):
+        return RedirectResponse(url="/login", status_code=302)
+    return templates.TemplateResponse("index.html", {"request": request, "assistant_name": config.ASSISTANT_NAME})
 
 @app.get("/memory")
-async def get_memory():
+async def get_memory_endpoint(request: Request):
+    if not get_current_user(request):
+        raise HTTPException(status_code=401, detail="Not authenticated")
     return {"memory": read_memory()}
 
 @app.get("/tools")
-async def list_tools():
+async def list_tools(request: Request):
+    if not get_current_user(request):
+        raise HTTPException(status_code=401, detail="Not authenticated")
     return {"tools": get_tool_list()}
 
 @app.websocket("/ws/chat")
 async def websocket_chat(websocket: WebSocket):
     await websocket.accept()
+
+    # Check auth from session cookie
+    session_cookie = websocket.cookies.get("session")
+    if not session_cookie:
+        await websocket.close(code=4001, reason="Not authenticated")
+        return
+
+    # Decode session to verify auth (must match SessionMiddleware's format)
+    try:
+        from itsdangerous import TimestampSigner, BadSignature
+        import base64
+        import json
+
+        signer = TimestampSigner(str(config.SECRET_KEY))
+        data = signer.unsign(session_cookie, max_age=config.SESSION_EXPIRY)
+        session_data = json.loads(base64.b64decode(data))
+        auth_token = session_data.get("auth_token")
+        if not auth_token or not verify_session_token(auth_token):
+            await websocket.close(code=4001, reason="Not authenticated")
+            return
+    except (BadSignature, Exception) as e:
+        print(f"Auth error: {e}")
+        await websocket.close(code=4001, reason="Not authenticated")
+        return
+
     session_id = str(id(websocket))
     conversations[session_id] = []
 
     try:
         while True:
             data = await websocket.receive_text()
+            print(f"USER: {data}")
+            sys.stdout.flush()
+            conversations[session_id].append({"role": "user", "content": data})
 
-            conversations[session_id].append({
-                "role": "user",
-                "content": data
-            })
-
-            # Build messages with system prompt
             messages = [{"role": "system", "content": get_system_prompt()}]
             messages.extend(conversations[session_id])
 
-            # Get initial response
-            full_response = await get_full_response(messages)
+            max_iterations = 10
+            iteration = 0
+            full_conversation_response = ""
 
-            # Tool execution loop - keep running tools until no more tool calls
-            max_tool_calls = 5  # Prevent infinite loops
-            tool_calls = 0
+            while iteration < max_iterations:
+                iteration += 1
+                print(f"DEBUG: Iteration {iteration}")
 
-            while parse_tool_call(full_response) and tool_calls < max_tool_calls:
-                tool_calls += 1
-                tool_name, params = parse_tool_call(full_response)
-                print(f"Executing tool: {tool_name} with params: {params}")
+                response = await get_full_response(messages)
+                response = process_memory_update(response)
+                print(f"DEBUG: AI response: {response[:200]}...")
 
-                # Execute the tool
-                tool_result = await execute_tool(tool_name, params)
-                print(f"Tool result: {tool_result}")
+                tool_call = parse_tool_call(response)
+                print(f"DEBUG: Tool call parsed: {tool_call}")
 
-                # Send tool status to user (so they know something is happening)
-                await websocket.send_text(f"[Using {tool_name}...]\n")
+                if tool_call:
+                    tool_name, params = tool_call
+                    print(f"DEBUG: Executing {tool_name} with params: {params}")
 
-                # Add tool result as system message (temporary, not in history)
-                messages.append({
-                    "role": "system",
-                    "content": f"Tool '{tool_name}' returned: {tool_result}"
-                })
+                    text_before = extract_text_before_tool(response)
+                    if text_before:
+                        await websocket.send_text(text_before + "\n\n")
+                        full_conversation_response += text_before + "\n\n"
 
-                # Get new response with tool result
-                full_response = await get_full_response(messages)
+                    await websocket.send_text(f"[Using {tool_name}...]\n")
 
-                # Remove the temporary tool result message
-                messages.pop()
+                    try:
+                        tool_result = await execute_tool(tool_name, params)
+                        print(f"DEBUG: Tool result: {tool_result}")
+                    except Exception as e:
+                        tool_result = f"Error: {str(e)}"
+                        print(f"DEBUG: Tool error: {e}")
 
-            # Process memory updates and clean response
-            cleaned_response = process_memory_update(full_response)
-            cleaned_response = strip_tool_call(cleaned_response)
+                    await websocket.send_text(f"[Done: {tool_name}]\n")
 
-            # Send final response to user
-            await websocket.send_text(cleaned_response)
+                    messages.append({"role": "assistant", "content": response})
+                    messages.append({
+                        "role": "user",
+                        "content": f"[Tool Result from {tool_name}]: {tool_result}"
+                    })
+                else:
+                    cleaned = strip_tool_call(response)
+                    if cleaned:
+                        print(f"ASSISTANT: {cleaned}")
+                        sys.stdout.flush()
+                        await websocket.send_text(cleaned)
+                        full_conversation_response += cleaned
+                    break
+
             await websocket.send_text("[END]")
 
-            # Store cleaned response in history
-            conversations[session_id].append({
-                "role": "assistant",
-                "content": cleaned_response
-            })
+            if full_conversation_response.strip():
+                conversations[session_id].append({
+                    "role": "assistant",
+                    "content": full_conversation_response.strip()
+                })
 
     except WebSocketDisconnect:
         if session_id in conversations:
             del conversations[session_id]
+    except Exception as e:
+        print(f"ERROR: {e}")
+        import traceback
+        traceback.print_exc()
 
 @app.get("/health")
 async def health():

@@ -1,3 +1,8 @@
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # Ollama settings
 OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_MODEL = "qwen3-coder:30b-a3b-q4_K_M"
@@ -6,35 +11,40 @@ OLLAMA_MODEL = "qwen3-coder:30b-a3b-q4_K_M"
 HOST = "0.0.0.0"
 PORT = 8888
 
+# Authentication settings (loaded from .env)
+SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-production")
+PASSWORD_HASH = os.getenv("PASSWORD_HASH", "")
+SESSION_EXPIRY = 86400  # 24 hours
+
 # Assistant settings
 ASSISTANT_NAME = "Smore Assistant"
 
-SYSTEM_PROMPT = """You are Smore's personal AI assistant. Be concise and helpful.
+SYSTEM_PROMPT = """You are Smore's personal AI assistant with access to tools.
 
-## Tools
-You have access to tools that can perform actions. To use a tool, output EXACTLY this format:
-[TOOL:tool_name]parameters here[/TOOL]
+## How to Use Tools
+When you need to perform an action, output a tool call in this EXACT format:
+[TOOL:tool_name]parameters[/TOOL]
 
-Available tools:
+Example - to list email accounts:
+[TOOL:list_email_accounts][/TOOL]
+
+Example - to search emails:
+[TOOL:search_emails]from:john[/TOOL]
+
+Example - to read an email:
+[TOOL:read_email]subject:meeting[/TOOL]
+
+## Available Tools
 {tools}
 
-Rules:
-- Only use tools when the user's request requires them
-- Wait for tool results before giving your final answer
-- Keep your responses concise
+## IMPORTANT RULES
+1. For ANY email-related request, you MUST use the email tools
+2. Always start with [TOOL:list_email_accounts][/TOOL] if you need to check accounts
+3. After calling a tool, WAIT - you will receive the results automatically
+4. Then respond to the user with the information
+5. You can chain multiple tools if needed
 
 ## Memory
-You have a persistent memory file. To update it (only for important new info):
-[MEMORY_UPDATE]
-# Assistant Memory
-## About User
-- facts here
-## Preferences
-- prefs here
-## Important Notes
-- notes here
-[/MEMORY_UPDATE]
-
 Current memory:
 {memory}
 """
