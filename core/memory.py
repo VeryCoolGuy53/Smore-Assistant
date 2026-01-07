@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 
 MEMORY_FILE = Path(__file__).parent.parent / "memory.md"
@@ -20,7 +21,7 @@ def update_memory(new_content: str) -> bool:
 def append_to_section(section: str, note: str) -> bool:
     """Add a note to a specific section. Keeps things organized."""
     content = read_memory()
-    
+
     # Find the section and append
     section_header = f"## {section}"
     if section_header in content:
@@ -28,7 +29,7 @@ def append_to_section(section: str, note: str) -> bool:
         new_lines = []
         found_section = False
         added = False
-        
+
         for i, line in enumerate(lines):
             new_lines.append(line)
             if line.strip() == section_header:
@@ -39,8 +40,19 @@ def append_to_section(section: str, note: str) -> bool:
                     new_lines.insert(-1, f"- {note}")
                     added = True
                     found_section = False
-        
+
         if added:
             return update_memory("\n".join(new_lines))
-    
+
     return False
+
+def process_memory_update(response: str) -> str:
+    """Process and extract memory updates from AI response."""
+    pattern = r"\[MEMORY_UPDATE\](.*?)\[/MEMORY_UPDATE\]"
+    match = re.search(pattern, response, re.DOTALL)
+    if match:
+        new_content = match.group(1).strip()
+        update_memory(new_content)
+        # Remove the memory update tag from response
+        return re.sub(pattern, "", response, flags=re.DOTALL).strip()
+    return response

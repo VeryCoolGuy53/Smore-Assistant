@@ -1,4 +1,5 @@
 import os
+import re
 import base64
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -144,12 +145,108 @@ class SearchEmailsTool(Tool):
         except Exception as e:
             return f"Error searching: {str(e)}"
 
+def strip_html_tags(html):
+    """
+    Strip HTML tags and decode entities to get plain text content.
+
+    Args:
+        html: HTML string
+
+    Returns:
+        str: Plain text content
+    """
+    import html as html_module
+
+    # Remove script and style elements
+    text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
+
+    # Remove HTML comments
+    text = re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
+
+    # Replace common block elements with newlines
+    text = re.sub(r'</(div|p|br|tr|h[1-6]|li)>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+
+    # Remove all remaining HTML tags
+    text = re.sub(r'<[^>]+>', '', text)
+
+    # Decode HTML entities
+    text = html_module.unescape(text)
+
+    # Clean up whitespace
+    lines = [line.strip() for line in text.split('\n')]
+    lines = [line for line in lines if line]  # Remove empty lines
+    text = '\n'.join(lines)
+
+    return text
+
+def extract_body_from_payload(payload):
+    """
+    Recursively extract email body from Gmail API payload.
+    Handles nested multipart structures (multipart/alternative, multipart/related, etc.)
+
+    Args:
+        payload: Gmail message payload dict
+
+    Returns:
+        tuple: (plain_text_body, html_body)
+    """
+    def extract_from_parts(parts, body_type):
+        """Recursively search for specific MIME type in nested parts."""
+        for part in parts:
+            mime_type = part.get("mimeType", "")
+
+            # Direct match - found the content!
+            if mime_type == body_type:
+                body_data = part.get("body", {}).get("data")
+                if body_data:
+                    return base64.urlsafe_b64decode(body_data).decode("utf-8", errors="replace")
+
+            # Nested multipart - recurse deeper
+            if mime_type.startswith("multipart/") and "parts" in part:
+                result = extract_from_parts(part["parts"], body_type)
+                if result:
+                    return result
+
+        return None
+
+    plain_body = None
+    html_body = None
+
+    # Handle nested parts structure
+    if "parts" in payload:
+        plain_body = extract_from_parts(payload["parts"], "text/plain")
+        html_body = extract_from_parts(payload["parts"], "text/html")
+
+    # Handle simple single-part messages
+    elif "body" in payload and "data" in payload["body"]:
+        mime_type = payload.get("mimeType", "")
+        body_data = base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="replace")
+
+        if mime_type == "text/plain":
+            plain_body = body_data
+        elif mime_type == "text/html":
+            html_body = body_data
+
+    return plain_body, html_body
+
 @register_tool
 class ReadEmailTool(Tool):
     name = "read_email"
-    description = "Read email content from a specific account. Format: 'account@email.com query'. Put account FIRST, then Gmail query. Example: 'ytsmore27@gmail.com subject:GPU order' reads from ytsmore27 account."
+    description = "Read email content from a specific account. Format: 'account@email.com query' or 'account@email.com query|offset'. Put account FIRST, then Gmail query. For long emails, use offset to read next chunk. Example: 'ytsmore27@gmail.com subject:GPU order' or 'ytsmore27@gmail.com subject:GPU order|2000' to read starting from char 2000."
 
     async def run(self, params):
+        # Parse offset from params (format: query|offset)
+        offset = 0
+        if "|" in params:
+            # Find the last | to handle cases where query itself might contain |
+            last_pipe = params.rfind("|")
+            offset_str = params[last_pipe + 1:].strip()
+            if offset_str.isdigit():
+                offset = int(offset_str)
+                params = params[:last_pipe]
+
         # Parse account prefix - same logic as SearchEmailsTool
         account = None
         query = params
@@ -192,20 +289,65 @@ class ReadEmailTool(Tool):
             sender = headers.get("From", "unknown")
             date = headers.get("Date", "")
             
-            body = ""
             payload = msg["payload"]
-            if "parts" in payload:
-                for part in payload["parts"]:
-                    if part["mimeType"] == "text/plain" and "data" in part.get("body", {}):
-                        body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8")
-                        break
-            elif "body" in payload and "data" in payload["body"]:
-                body = base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8")
-            
-            if len(body) > 500:
-                body = body[:500] + "... [truncated]"
-            
-            return f"From: {sender}\nSubject: {subject}\nDate: {date}\n\n{body}"
+
+            # Extract email body using recursive parser (handles nested multipart structures)
+            plain_body, html_body = extract_body_from_payload(payload)
+
+            # Prefer plain text, fall back to HTML (strip tags if HTML-only)
+            if plain_body:
+                body = plain_body
+            elif html_body:
+                # Strip HTML tags to make it readable
+                body = strip_html_tags(html_body)
+            else:
+                body = "[Email body could not be extracted]"
+
+            # Extract URLs from HTML if we don't have plain text or to supplement it
+            urls = []
+            if html_body:
+                # Extract URLs from href attributes
+                url_pattern = r'href=["\']([^"\']+)["\']'
+                urls = list(set(re.findall(url_pattern, html_body)))
+                # Filter out common non-useful links (mailto, #anchors, etc.)
+                urls = [url for url in urls if url.startswith('http')]
+
+            # Also extract plain URLs from text body
+            if body:
+                text_url_pattern = r'https?://[^\s<>"{}|\\^`\[\]]+'
+                text_urls = re.findall(text_url_pattern, body)
+                urls.extend(text_urls)
+                urls = list(set(urls))  # Remove duplicates
+
+            # Apply offset and truncation
+            total_length = len(body)
+            if offset >= total_length:
+                return f"From: {sender}\nSubject: {subject}\nDate: {date}\n\nOffset {offset} exceeds email length ({total_length} chars). Email ends at char {total_length}."
+
+            body = body[offset:]
+            chunk_size = 2000
+
+            if len(body) > chunk_size:
+                body = body[:chunk_size]
+                next_offset = offset + chunk_size
+                truncation_msg = f"... [truncated at char {next_offset} of {total_length}, use offset {next_offset} to read more]"
+                body += truncation_msg
+            elif offset > 0:
+                # This is a continuation chunk that's complete
+                body = f"[Continuing from char {offset}]\n" + body
+
+            # Build response with links section
+            response = f"From: {sender}\nSubject: {subject}\nDate: {date}\n\n{body}"
+
+            # Add links section if URLs were found (only on first chunk, not continuations)
+            if urls and offset == 0:
+                response += "\n\n--- Links found in email ---\n"
+                for i, url in enumerate(urls[:10], 1):  # Limit to 10 links to avoid overwhelming
+                    response += f"{i}. {url}\n"
+                if len(urls) > 10:
+                    response += f"... and {len(urls) - 10} more links"
+
+            return response
             
         except Exception as e:
             return f"Error reading email: {str(e)}"

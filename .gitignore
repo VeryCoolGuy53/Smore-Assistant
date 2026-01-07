@@ -7,3 +7,5 @@ __pycache__/
 .env
 tokens/
 credentials.json
+# Vosk models - too large for git
+models/

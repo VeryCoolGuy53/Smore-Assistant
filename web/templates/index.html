@@ -204,14 +204,14 @@
         // Render functions
         function renderUserMessage(content, timestamp) {
             const messageGroup = document.createElement('div');
-            messageGroup.className = 'message-group flex flex-col items-end gap-1';
+            messageGroup.className = 'message-group user flex flex-col items-end gap-1';
 
-            messageGroup.innerHTML = `<div class="bg-[var(--color-bg-light)] text-white px-4 py-3 rounded-2xl rounded-br-md max-w-[80%] shadow-md whitespace-pre-wrap">${escapeHtml(content)}</div><div class="flex items-center gap-3 px-2 text-xs text-[var(--color-subtext)] opacity-70"><span class="timestamp">${formatTimestamp(timestamp)}</span><button class="copy-button hover:text-[var(--color-accent)] transition-colors cursor-pointer" data-text="${escapeHtml(content).replace(/"/g, '&quot;')}">📋 Copy</button></div>`;
+            messageGroup.innerHTML = `<div class="bg-[var(--color-bg-light)] text-white px-4 py-3 rounded-2xl rounded-br-md max-w-[80%] shadow-md whitespace-pre-wrap">${escapeHtml(content)}</div><div class="flex items-center gap-3 px-2 text-xs text-[var(--color-subtext)] opacity-70"><span class="timestamp">${formatTimestamp(timestamp)}</span><button class="copy-button hover:text-[var(--color-accent)] transition-colors cursor-pointer">📋 Copy</button></div>`;
 
-            // Add copy button event listener
+            // Add copy button event listener with closure to capture original text
             const copyBtn = messageGroup.querySelector('.copy-button');
             copyBtn.addEventListener('click', function() {
-                copyToClipboard(this.getAttribute('data-text'), this);
+                copyToClipboard(content, this);
             });
 
             chatContainer.appendChild(messageGroup);
@@ -221,7 +221,7 @@
 
         function renderAssistantMessage(id) {
             const messageGroup = document.createElement('div');
-            messageGroup.className = 'message-group flex flex-col items-start gap-1';
+            messageGroup.className = 'message-group assistant flex flex-col items-start gap-1';
             messageGroup.id = id;
 
             messageGroup.innerHTML = `<div class="message-content assistant-text bg-[var(--color-bg-dark)] border border-[var(--color-bg-light)] text-white px-4 py-3 rounded-2xl rounded-bl-md max-w-[85%] shadow-md whitespace-pre-wrap"></div><div class="message-metadata flex items-center gap-3 px-2 text-xs text-[var(--color-subtext)] opacity-70"><span class="timestamp"></span><button class="copy-button hover:text-[var(--color-accent)] transition-colors cursor-pointer">📋 Copy</button></div>`;
@@ -366,6 +366,8 @@
 
                 case 'assistant_chunk':
                     if (!chatState.currentMessage) {
+                        // Hide thinking indicator when first chunk arrives
+                        hideThinkingIndicator();
                         const id = generateId();
                         const messageGroup = renderAssistantMessage(id);
                         chatState.currentMessage = {
@@ -404,7 +406,11 @@
                         msg.tool_name,
                         msg.params
                     );
-                    chatState.currentMessage.tools.push({ toolId, name: msg.tool_name });
+                    chatState.currentMessage.tools.push({
+                        toolId,
+                        name: msg.tool_name,
+                        iteration: msg.iteration
+                    });
 
                     if (msg.iteration > 1) {
                         addIterationIndicator(chatState.currentMessage.element, msg.iteration);
@@ -413,14 +419,60 @@
 
                 case 'tool_result':
                     hideThinkingIndicator();
-                    const tool = chatState.currentMessage?.tools.find(t => t.name === msg.tool_name);
+                    const tool = chatState.currentMessage?.tools.find(t => t.iteration === msg.iteration);
                     if (tool) {
                         updateToolResult(tool.toolId, msg.result, msg.duration_ms);
                     }
                     break;
 
+                case 'subagent_tool_start':
+                    // Subagent is calling a tool - show it with indent
+                    if (chatState.currentMessage) {
+                        const toolId = addToolExecution(
+                            chatState.currentMessage.element,
+                            `↳ [${msg.subagent}] ${msg.tool_name}`,
+                            msg.params
+                        );
+                        chatState.currentMessage.tools.push({
+                            toolId,
+                            name: msg.tool_name,
+                            subagent: msg.subagent,
+                            iteration: msg.iteration
+                        });
+                    }
+                    break;
+
+                case 'subagent_tool_end':
+                    // Subagent tool completed
+                    if (chatState.currentMessage) {
+                        const subagentTool = chatState.currentMessage.tools
+                            .reverse()
+                            .find(t => t.name === msg.tool_name && t.subagent);
+                        if (subagentTool) {
+                            const durationMs = Math.round(msg.duration * 1000);
+                            updateToolResult(subagentTool.toolId, msg.result, durationMs);
+                        }
+                        chatState.currentMessage.tools.reverse(); // restore order
+                    }
+                    break;
+
                 case 'end':
                     hideThinkingIndicator();
+
+                    // Clear any leftover pending tools (spinners that never got results)
+                    if (chatState.currentMessage) {
+                        chatState.currentMessage.tools.forEach(tool => {
+                            const toolBlock = document.getElementById(tool.toolId);
+                            if (toolBlock) {
+                                const statusIcon = toolBlock.querySelector('.tool-status-icon');
+                                if (statusIcon && statusIcon.classList.contains('pending')) {
+                                    // Tool never got a result - remove it
+                                    toolBlock.remove();
+                                }
+                            }
+                        });
+                    }
+
                     if (chatState.currentMessage && msg.total_iterations > 1) {
                         addIterationIndicator(
                             chatState.currentMessage.element,
@@ -465,6 +517,9 @@
             chatState.isProcessing = true;
 
             ws.send(text);
+
+            // Show thinking indicator while waiting for first response
+            showThinkingIndicator();
         }
 
         sendBtn.addEventListener("click", sendMessage);

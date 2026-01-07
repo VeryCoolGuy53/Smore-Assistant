@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config
 from core.ollama_client import OllamaClient
-from core.memory import read_memory, update_memory
+from core.memory import read_memory, update_memory, process_memory_update
 from core.tools import parse_tool_call, strip_tool_call, execute_tool, get_tool_list, parse_thinking, strip_thinking, TOOLS
 
 import tools  # This registers all tools
@@ -60,28 +60,12 @@ def get_system_prompt() -> str:
     tool_list = get_tool_list()
     return config.SYSTEM_PROMPT.format(memory=memory, tools=tool_list)
 
-def process_memory_update(response: str) -> str:
-    pattern = r"\[MEMORY_UPDATE\](.*?)\[/MEMORY_UPDATE\]"
-    match = re.search(pattern, response, re.DOTALL)
-    if match:
-        new_memory = match.group(1).strip()
-        if len(new_memory) <= 2000:
-            update_memory(new_memory)
-        response = re.sub(pattern, "", response, flags=re.DOTALL).strip()
-    return response
-
 def extract_text_before_tool(response: str) -> str:
     pattern = r"\[TOOL:[^\]]+\].*?\[/TOOL\]"
     match = re.search(pattern, response, re.DOTALL)
     if match:
         return response[:match.start()].strip()
     return response.strip()
-
-async def get_full_response(messages: list) -> str:
-    full_response = ""
-    async for chunk in ollama.chat(messages, stream=True):
-        full_response += chunk
-    return full_response
 
 def create_message(msg_type: str, **kwargs) -> str:
     """Create JSON message with timestamp."""
@@ -175,7 +159,7 @@ async def websocket_chat(websocket: WebSocket):
             # Inject initial thinking prompt
             messages.append({
                 "role": "user",
-                "content": "Before using tools, think through your strategy: What are you trying to find? What search terms should you try? Start with 2-3 targeted searches, then WAIT to see results before trying more. Output your plan in [THINKING]...[/THINKING] tags."
+                "content": "Before using tools, think through your strategy: Review what you already know from our conversation. What information have you already gathered? What's still missing? Use what you know to be efficient - don't re-search things you've already found. Output your plan in [THINKING]...[/THINKING] tags."
             })
 
             max_iterations = 20
@@ -198,8 +182,44 @@ async def websocket_chat(websocket: WebSocket):
                 if iteration > 1:
                     await websocket.send_text(create_message("thinking", iteration=iteration))
 
-                response = await get_full_response(messages)
-                response = process_memory_update(response)
+                # Stream directly from Ollama - filter out thinking and tool calls before sending to frontend
+                response_buffer = ""
+                in_thinking = False
+                in_tool = False
+
+                async for chunk in ollama.chat(messages, stream=True):
+                    # Accumulate for tool detection
+                    response_buffer += chunk
+
+                    # Filter out thinking and tool content from streaming display
+                    filtered_chunk = ""
+                    for char in chunk:
+                        # Detect start of thinking block
+                        if char == '[' and response_buffer.endswith('[THINKING'):
+                            in_thinking = True
+
+                        # Detect start of tool block
+                        if char == '[' and response_buffer[-6:].startswith('[TOOL:'):
+                            in_tool = True
+
+                        # Only add char if not in thinking or tool block
+                        if not in_thinking and not in_tool:
+                            filtered_chunk += char
+
+                        # Detect end of thinking block
+                        if char == ']' and response_buffer.endswith('[/THINKING]'):
+                            in_thinking = False
+
+                        # Detect end of tool block
+                        if char == ']' and response_buffer.endswith('[/TOOL]'):
+                            in_tool = False
+
+                    # Only send non-thinking, non-tool content to frontend
+                    if filtered_chunk:
+                        await websocket.send_text(create_message("assistant_chunk", content=filtered_chunk))
+
+                # Process memory updates on complete response
+                response = process_memory_update(response_buffer)
                 print(f"DEBUG: AI response: {response[:200]}...")
 
                 # Parse and log thinking (internal reasoning, not shown to user)
@@ -219,9 +239,7 @@ async def websocket_chat(websocket: WebSocket):
 
                     text_before = extract_text_before_tool(response)
                     if text_before:
-                        # Stream text before tool character by character
-                        for char in text_before:
-                            await websocket.send_text(create_message("assistant_chunk", content=char))
+                        # Text already streamed to frontend - just track it
                         full_conversation_response += text_before
 
                     # Send tool start
@@ -235,7 +253,7 @@ async def websocket_chat(websocket: WebSocket):
 
                     # Execute tool
                     try:
-                        tool_result = await execute_tool(tool_name, params)
+                        tool_result = await execute_tool(tool_name, params, depth=0, websocket=websocket)
                         print(f"DEBUG: Tool result: {tool_result}")
                     except Exception as e:
                         tool_result = f"Error: {str(e)}"
@@ -258,15 +276,25 @@ async def websocket_chat(websocket: WebSocket):
                         "content": f"[Tool Result from {tool_name}]: {tool_result}"
                     })
                 else:
-                    # Stream final response character by character
+                    # Final response already streamed to frontend - just track it
                     cleaned = strip_tool_call(response)
                     if cleaned:
                         print(f"ASSISTANT: {cleaned}")
                         sys.stdout.flush()
-                        for char in cleaned:
-                            await websocket.send_text(create_message("assistant_chunk", content=char))
+                        # Text already streamed to frontend - just track it
                         full_conversation_response += cleaned
-                    break
+                        break
+                    else:
+                        # Model generated only thinking, no response - continue to next iteration
+                        print(f"DEBUG: Model generated only thinking, continuing...")
+                        if iteration >= max_iterations - 1:
+                            # Hit max iterations without response, send error
+                            error_msg = "I apologize, I'm having trouble formulating a response. Could you rephrase your request?"
+                            for char in error_msg:
+                                await websocket.send_text(create_message("assistant_chunk", content=char))
+                            full_conversation_response += error_msg
+                            break
+                        continue
 
             # Send end message
             await websocket.send_text(create_message("end", total_iterations=iteration))
